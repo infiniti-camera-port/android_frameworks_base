@@ -1,5 +1,6 @@
 package com.android.server.wm;
 
+import android.Manifest;
 import android.content.Context;
 import android.database.ContentObserver;
 import android.net.Uri;
@@ -51,6 +52,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
 
     @Override
     public void setAccessControlAppsInfo(String type, Map accessControlInfo, int userId) {
+        enforceManageAccessControl();
         final String normalizedType = normalizeType(type);
         if (normalizedType == null) {
             Slog.w(TAG, "setAccessControlAppsInfo type mismatch: " + type);
@@ -79,6 +81,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
 
     @Override
     public void setAccessControlEnabled(String type, boolean enable, int userId) {
+        enforceManageAccessControl();
         final String normalizedType = normalizeType(type);
         if (normalizedType == null) {
             Slog.w(TAG, "setAccessControlEnabled type mismatch: " + type);
@@ -107,6 +110,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
 
     @Override
     public void addEncryptPass(String packageName, int windowMode, int userId) {
+        enforceManageAccessControl();
         if (packageName == null || packageName.isEmpty()) {
             return;
         }
@@ -157,7 +161,13 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
 
     @Override
     public void updateRusList(int type, List<String> addList, List<String> deleteList) {
+        enforceManageAccessControl();
         Slog.d(TAG, "updateRusList type=" + type);
+    }
+
+    private void enforceManageAccessControl() {
+        mContext.enforceCallingOrSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS,
+                "Oplus access-control mutation requires WRITE_SECURE_SETTINGS");
     }
 
     private UserState getUserStateLocked(int userId) {
