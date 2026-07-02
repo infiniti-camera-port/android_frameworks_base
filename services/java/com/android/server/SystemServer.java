@@ -313,6 +313,7 @@ import com.android.server.wallpapereffectsgeneration.WallpaperEffectsGenerationM
 import com.android.server.wearable.WearableSensingManagerService;
 import com.android.server.webkit.WebViewUpdateService;
 import com.android.server.wm.ActivityTaskManagerService;
+import com.android.server.wm.AxSandboxService;
 import com.android.server.wm.OplusAccessControlManagerService;
 import com.android.server.wm.WindowManagerGlobalLock;
 import com.android.server.wm.WindowManagerService;
@@ -3362,6 +3363,10 @@ public final class SystemServer implements Dumpable {
         final WindowManagerService windowManagerF = wm;
         final ConnectivityManager connectivityF = (ConnectivityManager)
                 context.getSystemService(Context.CONNECTIVITY_SERVICE);
+
+        t.traceBegin("StartAxSandboxService");
+        AxSandboxService.systemReady(context, mActivityManagerService.mActivityTaskManager);
+        t.traceEnd();
 
         // We now tell the activity manager it is okay to run third party
         // code.  It will call back into us once it has gotten to the state
