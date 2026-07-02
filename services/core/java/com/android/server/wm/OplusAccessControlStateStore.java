@@ -42,10 +42,15 @@ final class OplusAccessControlStateStore {
         }
     }
 
-    void setApps(String type, int userId, HashMap<String, Integer> apps) {
+    HashMap<String, Integer> setApps(String type, int userId, HashMap<String, Integer> apps) {
         synchronized (mLock) {
-            getUserStateLocked(userId).apps.put(type, apps);
+            final UserState state = getUserStateLocked(userId);
+            final HashMap<String, Integer> previous = state.apps.get(type);
+            final HashMap<String, Integer> previousCopy =
+                    previous == null ? new HashMap<String, Integer>() : new HashMap<>(previous);
+            state.apps.put(type, apps);
             persistAppsLocked(type, userId, apps);
+            return previousCopy;
         }
     }
 
@@ -81,7 +86,7 @@ final class OplusAccessControlStateStore {
     boolean isPackageEnabled(String type, String packageName, int userId) {
         synchronized (mLock) {
             final Integer value = getUserStateLocked(userId).apps.get(type).get(packageName);
-            return value != null && value != 0;
+            return value != null && value > 0;
         }
     }
 

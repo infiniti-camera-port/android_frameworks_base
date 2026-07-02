@@ -7,6 +7,7 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
+import android.os.UserHandle;
 import android.util.Slog;
 
 import com.oplus.app.IOplusAccessControlManager;
@@ -14,6 +15,7 @@ import com.oplus.app.IOplusAccessControlObserver;
 import com.oplus.app.OplusAccessControlInfo;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -27,6 +29,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
     private final OplusAccessControlStateStore mStateStore;
     private final RemoteCallbackList<IOplusAccessControlObserver> mObservers =
             new RemoteCallbackList<>();
+    private final Handler mHandler = new Handler();
 
     public OplusAccessControlManagerService(Context context) {
         mContext = context;
@@ -37,9 +40,10 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
         final Uri encryptUri = mStateStore.getEnabledUri(TYPE_ENCRYPT);
         final Uri hideUri = mStateStore.getEnabledUri(TYPE_HIDE);
         mContext.getContentResolver().registerContentObserver(encryptUri, false,
-                new SettingsObserver(new Handler()));
+                new SettingsObserver(mHandler));
         mContext.getContentResolver().registerContentObserver(hideUri, false,
-                new SettingsObserver(new Handler()));
+                new SettingsObserver(mHandler));
+        schedulePersistedAccessControlSync();
         Slog.i(TAG, "OplusAccessControlManagerService ready");
     }
 
@@ -52,7 +56,10 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
             return;
         }
         final HashMap<String, Integer> apps = sanitizeMap(accessControlInfo);
-        mStateStore.setApps(normalizedType, userId, apps);
+        final boolean enabled = mStateStore.getEnabled(normalizedType, userId);
+        final HashMap<String, Integer> previousApps =
+                mStateStore.setApps(normalizedType, userId, apps);
+        syncAxSandboxLockedApps(normalizedType, previousApps, apps, enabled, userId);
         notifyAccessControlStateChanged(normalizedType, apps, userId);
     }
 
@@ -75,6 +82,8 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
             return;
         }
         mStateStore.setEnabled(normalizedType, enable, userId);
+        final HashMap<String, Integer> apps = mStateStore.getApps(normalizedType, userId);
+        syncAxSandboxLockedApps(normalizedType, apps, apps, enable, userId);
         notifyAccessControlEnableChanged(normalizedType, enable, userId);
     }
 
@@ -154,8 +163,9 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
                     final OplusAccessControlInfo info = new OplusAccessControlInfo();
                     info.mName = entry.getKey();
                     info.userId = userId;
-                    info.isEncrypted = TYPE_ENCRYPT.equals(type) && entry.getValue() != 0;
-                    info.isHideIcon = TYPE_HIDE.equals(type) && entry.getValue() != 0;
+                    info.isEncrypted = TYPE_ENCRYPT.equals(type)
+                            && isAccessEnabledValue(entry.getValue());
+                    info.isHideIcon = TYPE_HIDE.equals(type) && isAccessEnabledValue(entry.getValue());
                     try {
                         if (TYPE_HIDE.equals(type)) {
                             mObservers.getBroadcastItem(i).onHideStateChange(info);
@@ -194,6 +204,53 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
         } finally {
             mObservers.finishBroadcast();
         }
+    }
+
+    private void syncAxSandboxLockedApps(String type, Map<String, Integer> previousApps,
+            Map<String, Integer> currentApps, boolean enabled, int userId) {
+        if (!TYPE_ENCRYPT.equals(type) || userId != 0) {
+            return;
+        }
+
+        final HashSet<String> packages = new HashSet<>();
+        if (previousApps != null) {
+            packages.addAll(previousApps.keySet());
+        }
+        if (currentApps != null) {
+            packages.addAll(currentApps.keySet());
+        }
+
+        for (String packageName : packages) {
+            if (packageName == null || packageName.isEmpty()) {
+                continue;
+            }
+            final Integer value = currentApps == null ? null : currentApps.get(packageName);
+            try {
+                if (enabled && isAccessEnabledValue(value)) {
+                    AxSandboxService.get().addLockedApp(packageName);
+                } else {
+                    AxSandboxService.get().removeLockedApp(packageName);
+                }
+            } catch (RuntimeException e) {
+                Slog.w(TAG, "Failed syncing Oplus app lock to AxSandbox for " + packageName, e);
+            }
+        }
+    }
+
+    private void syncPersistedAccessControlState(int userId) {
+        final HashMap<String, Integer> apps = mStateStore.getApps(TYPE_ENCRYPT, userId);
+        final boolean enabled = mStateStore.getEnabled(TYPE_ENCRYPT, userId);
+        syncAxSandboxLockedApps(TYPE_ENCRYPT, apps, apps, enabled, userId);
+    }
+
+    private void schedulePersistedAccessControlSync() {
+        syncPersistedAccessControlState(UserHandle.USER_SYSTEM);
+        mHandler.postDelayed(() -> syncPersistedAccessControlState(UserHandle.USER_SYSTEM), 15_000);
+        mHandler.postDelayed(() -> syncPersistedAccessControlState(UserHandle.USER_SYSTEM), 60_000);
+    }
+
+    private static boolean isAccessEnabledValue(Integer value) {
+        return value != null && value > 0;
     }
 
     private static String normalizeType(String type) {
