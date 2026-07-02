@@ -7,8 +7,6 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
-import android.provider.Settings;
-import android.util.ArrayMap;
 import android.util.Slog;
 
 import com.oplus.app.IOplusAccessControlManager;
@@ -16,33 +14,28 @@ import com.oplus.app.IOplusAccessControlObserver;
 import com.oplus.app.OplusAccessControlInfo;
 
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 public final class OplusAccessControlManagerService extends IOplusAccessControlManager.Stub {
     private static final String TAG = "OplusAccessControlManagerService";
 
     private static final String TYPE_ENCRYPT = "type_encrypt";
     private static final String TYPE_HIDE = "type_hide";
-    private static final String KEY_ENABLED_PREFIX = "oplus_access_control_enabled_";
-    private static final String KEY_APPS_PREFIX = "oplus_access_control_apps_";
-    private static final String KEY_PASS_PREFIX = "oplus_access_control_pass_";
 
     private final Context mContext;
-    private final Object mLock = new Object();
-    private final ArrayMap<Integer, UserState> mUserStates = new ArrayMap<>();
+    private final OplusAccessControlStateStore mStateStore;
     private final RemoteCallbackList<IOplusAccessControlObserver> mObservers =
             new RemoteCallbackList<>();
 
     public OplusAccessControlManagerService(Context context) {
         mContext = context;
+        mStateStore = new OplusAccessControlStateStore(context);
     }
 
     public void onSystemReady() {
-        final Uri encryptUri = Settings.Secure.getUriFor(KEY_ENABLED_PREFIX + TYPE_ENCRYPT);
-        final Uri hideUri = Settings.Secure.getUriFor(KEY_ENABLED_PREFIX + TYPE_HIDE);
+        final Uri encryptUri = mStateStore.getEnabledUri(TYPE_ENCRYPT);
+        final Uri hideUri = mStateStore.getEnabledUri(TYPE_HIDE);
         mContext.getContentResolver().registerContentObserver(encryptUri, false,
                 new SettingsObserver(new Handler()));
         mContext.getContentResolver().registerContentObserver(hideUri, false,
@@ -59,10 +52,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
             return;
         }
         final HashMap<String, Integer> apps = sanitizeMap(accessControlInfo);
-        synchronized (mLock) {
-            getUserStateLocked(userId).apps.put(normalizedType, apps);
-            persistAppsLocked(normalizedType, userId, apps);
-        }
+        mStateStore.setApps(normalizedType, userId, apps);
         notifyAccessControlStateChanged(normalizedType, apps, userId);
     }
 
@@ -73,10 +63,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
             Slog.w(TAG, "getAccessControlAppsInfo type mismatch: " + type);
             return new HashMap<String, Integer>();
         }
-        synchronized (mLock) {
-            final HashMap<String, Integer> apps = getUserStateLocked(userId).apps.get(normalizedType);
-            return apps == null ? new HashMap<String, Integer>() : new HashMap<>(apps);
-        }
+        return mStateStore.getApps(normalizedType, userId);
     }
 
     @Override
@@ -87,11 +74,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
             Slog.w(TAG, "setAccessControlEnabled type mismatch: " + type);
             return;
         }
-        synchronized (mLock) {
-            getUserStateLocked(userId).enabled.put(normalizedType, enable);
-            Settings.Secure.putIntForUser(mContext.getContentResolver(),
-                    KEY_ENABLED_PREFIX + normalizedType, enable ? 1 : 0, userId);
-        }
+        mStateStore.setEnabled(normalizedType, enable, userId);
         notifyAccessControlEnableChanged(normalizedType, enable, userId);
     }
 
@@ -102,10 +85,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
             Slog.w(TAG, "getAccessControlEnabled type mismatch: " + type);
             return false;
         }
-        synchronized (mLock) {
-            final Boolean enabled = getUserStateLocked(userId).enabled.get(normalizedType);
-            return enabled != null && enabled;
-        }
+        return mStateStore.getEnabled(normalizedType, userId);
     }
 
     @Override
@@ -114,11 +94,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
         if (packageName == null || packageName.isEmpty()) {
             return;
         }
-        synchronized (mLock) {
-            final UserState state = getUserStateLocked(userId);
-            state.encryptPassPackages.add(packageName);
-            persistPassPackagesLocked(userId, state.encryptPassPackages);
-        }
+        mStateStore.addEncryptPass(packageName, userId);
     }
 
     @Override
@@ -126,9 +102,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
         if (packageName == null) {
             return false;
         }
-        synchronized (mLock) {
-            return getUserStateLocked(userId).encryptPassPackages.contains(packageName);
-        }
+        return mStateStore.isEncryptPass(packageName, userId);
     }
 
     @Override
@@ -136,14 +110,12 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
         if (packageName == null) {
             return false;
         }
-        synchronized (mLock) {
-            final Integer value = getUserStateLocked(userId).apps.get(TYPE_ENCRYPT).get(packageName);
-            return value != null && value != 0;
-        }
+        return mStateStore.isPackageEnabled(TYPE_ENCRYPT, packageName, userId);
     }
 
     @Override
     public boolean registerAccessControlObserver(String type, IOplusAccessControlObserver observer) {
+        enforceManageAccessControl();
         final String normalizedType = normalizeType(type);
         if (normalizedType == null || observer == null) {
             return false;
@@ -153,6 +125,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
 
     @Override
     public boolean unregisterAccessControlObserver(String type, IOplusAccessControlObserver observer) {
+        enforceManageAccessControl();
         if (observer == null) {
             return false;
         }
@@ -167,86 +140,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
 
     private void enforceManageAccessControl() {
         mContext.enforceCallingOrSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS,
-                "Oplus access-control mutation requires WRITE_SECURE_SETTINGS");
-    }
-
-    private UserState getUserStateLocked(int userId) {
-        UserState state = mUserStates.get(userId);
-        if (state == null) {
-            state = new UserState(userId);
-            state.enabled.put(TYPE_ENCRYPT, Settings.Secure.getIntForUser(
-                    mContext.getContentResolver(), KEY_ENABLED_PREFIX + TYPE_ENCRYPT, 0, userId) != 0);
-            state.enabled.put(TYPE_HIDE, Settings.Secure.getIntForUser(
-                    mContext.getContentResolver(), KEY_ENABLED_PREFIX + TYPE_HIDE, 0, userId) != 0);
-            state.apps.put(TYPE_ENCRYPT, readApps(TYPE_ENCRYPT, userId));
-            state.apps.put(TYPE_HIDE, readApps(TYPE_HIDE, userId));
-            state.encryptPassPackages.addAll(readStringSet(KEY_PASS_PREFIX, userId));
-            mUserStates.put(userId, state);
-        }
-        return state;
-    }
-
-    private HashMap<String, Integer> readApps(String type, int userId) {
-        final HashMap<String, Integer> result = new HashMap<>();
-        final String raw = Settings.Secure.getStringForUser(
-                mContext.getContentResolver(), KEY_APPS_PREFIX + type, userId);
-        if (raw == null || raw.isEmpty()) {
-            return result;
-        }
-        final String[] entries = raw.split(";");
-        for (String entry : entries) {
-            final int split = entry.lastIndexOf('=');
-            if (split <= 0 || split == entry.length() - 1) {
-                continue;
-            }
-            try {
-                result.put(entry.substring(0, split), Integer.parseInt(entry.substring(split + 1)));
-            } catch (NumberFormatException ignored) {
-            }
-        }
-        return result;
-    }
-
-    private Set<String> readStringSet(String prefix, int userId) {
-        final HashSet<String> result = new HashSet<>();
-        final String raw = Settings.Secure.getStringForUser(
-                mContext.getContentResolver(), prefix + userId, userId);
-        if (raw == null || raw.isEmpty()) {
-            return result;
-        }
-        for (String entry : raw.split(";")) {
-            if (!entry.isEmpty()) {
-                result.add(entry);
-            }
-        }
-        return result;
-    }
-
-    private void persistAppsLocked(String type, int userId, Map<String, Integer> apps) {
-        final StringBuilder builder = new StringBuilder();
-        for (Map.Entry<String, Integer> entry : apps.entrySet()) {
-            if (entry.getKey() == null || entry.getValue() == null) {
-                continue;
-            }
-            if (builder.length() > 0) {
-                builder.append(';');
-            }
-            builder.append(entry.getKey()).append('=').append(entry.getValue());
-        }
-        Settings.Secure.putStringForUser(mContext.getContentResolver(),
-                KEY_APPS_PREFIX + type, builder.toString(), userId);
-    }
-
-    private void persistPassPackagesLocked(int userId, Set<String> packages) {
-        final StringBuilder builder = new StringBuilder();
-        for (String packageName : packages) {
-            if (builder.length() > 0) {
-                builder.append(';');
-            }
-            builder.append(packageName);
-        }
-        Settings.Secure.putStringForUser(mContext.getContentResolver(),
-                KEY_PASS_PREFIX + userId, builder.toString(), userId);
+                "Oplus access-control management requires WRITE_SECURE_SETTINGS");
     }
 
     private void notifyAccessControlStateChanged(String type, Map<String, Integer> apps, int userId) {
@@ -336,20 +230,7 @@ public final class OplusAccessControlManagerService extends IOplusAccessControlM
 
         @Override
         public void onChange(boolean selfChange, Uri uri) {
-            synchronized (mLock) {
-                mUserStates.clear();
-            }
-        }
-    }
-
-    private static final class UserState {
-        final int userId;
-        final ArrayMap<String, Boolean> enabled = new ArrayMap<>();
-        final ArrayMap<String, HashMap<String, Integer>> apps = new ArrayMap<>();
-        final Set<String> encryptPassPackages = new HashSet<>();
-
-        UserState(int userId) {
-            this.userId = userId;
+            mStateStore.clear();
         }
     }
 }
