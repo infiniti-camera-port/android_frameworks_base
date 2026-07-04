@@ -9502,21 +9502,23 @@
     <attribution android:tag="DevicePolicyManagerService"
         android:label="@string/device_policy_manager_service"/>
 
-    <!-- OEM (Oplus) signature permissions whose OOS definer app (SafeCenter /
-         securitypermission) is not shipped in this port. Defined here so the
-         platform-signed OEM apps (OppoGallery2 etc.) can hold them:
+    <!-- OEM (Oplus) signature permissions declared by com.oplus.securitypermission
+         (SecurityPermission.apk) on OOS / LOS-v4.0, dropped in the v4.0->v4.1 port
+         (confirmed via dumpyara of both artifacts) leaving them UNDEFINED. The OEM
+         definer was a platform-signed system app, so re-declaring them in the
+         platform framework-res is the source-controlled equivalent. signature|
+         privileged matches v4.0's level + the existing privapp-permissions-oplus.xml
+         gallery allowlist, so the platform-signed gallery holds them:
          - com.oplus.permission.safe.AUTHENTICATE gates AIUnit's
            .download.service.AIUnitDownloadService (the AI-editor authorize/bind);
-         - oplus.permission.OPLUS_COMPONENT_SAFE / RUS_WRITE_DATABASE gate
-           com.oplus.romupdate's RomUpdateProvider (gallery RUS config lists).
-         Undefined -> the platform-signed gallery cannot hold them -> Permission
-         Denial -> authorize permission=false -> "Agree and continue" renders nothing. -->
+         - oplus.permission.OPLUS_COMPONENT_SAFE gates com.oplus.romupdate's
+           RomUpdateProvider (gallery RUS config lists; 24x Permission Denial).
+         RUS_WRITE_DATABASE is intentionally NOT declared here -- com.oplus.romupdate
+         already defines it; a duplicate platform definition would override it. -->
     <permission android:name="com.oplus.permission.safe.AUTHENTICATE"
-        android:protectionLevel="signature" />
+        android:protectionLevel="signature|privileged" />
     <permission android:name="oplus.permission.OPLUS_COMPONENT_SAFE"
-        android:protectionLevel="signature" />
-    <permission android:name="oplus.permission.RUS_WRITE_DATABASE"
-        android:protectionLevel="signature" />
+        android:protectionLevel="signature|privileged" />
 
     <application android:process="system"
                  android:persistent="true"
