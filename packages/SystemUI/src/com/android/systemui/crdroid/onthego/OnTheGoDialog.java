@@ -1,6 +1,5 @@
 /*
  * Copyright (C) 2014 The NamelessRom Project
- *           (C) 2026 crDroid Android Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,21 +21,15 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
-import android.graphics.Color;
-import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.os.Handler;
-import android.os.Looper;
 import android.provider.Settings;
-import android.util.DisplayMetrics;
-import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.CompoundButton;
 import android.widget.SeekBar;
 import android.widget.Switch;
-import android.widget.TextView;
 
 import com.android.systemui.res.R;
 
@@ -44,18 +37,11 @@ import com.android.internal.util.crdroid.OnTheGoUtils;
 
 public class OnTheGoDialog extends Dialog {
 
-    private static final float MIN_ALPHA = 0.15f;
-
-    private static final int DIALOG_MAX_WIDTH_DP   = 560;
-    private static final int DIALOG_SIDE_MARGIN_DP = 24;
-
     protected final Context mContext;
-    protected final Handler mHandler = new Handler(Looper.getMainLooper());
+    protected final Handler mHandler = new Handler();
 
     private final int mOnTheGoDialogLongTimeout;
     private final int mOnTheGoDialogShortTimeout;
-
-    private TextView mAlphaValue;
 
     private final Runnable mDismissDialogRunnable = new Runnable() {
         public void run() {
@@ -66,7 +52,7 @@ public class OnTheGoDialog extends Dialog {
     };
 
     public OnTheGoDialog(Context ctx) {
-        super(ctx, android.R.style.Theme_DeviceDefault_DayNight);
+        super(ctx);
         mContext = ctx;
         final Resources r = mContext.getResources();
         mOnTheGoDialogLongTimeout =
@@ -78,40 +64,28 @@ public class OnTheGoDialog extends Dialog {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        final Window window = getWindow();
+        Window window = getWindow();
         window.setType(WindowManager.LayoutParams.TYPE_VOLUME_OVERLAY);
         window.getAttributes().privateFlags |=
                 WindowManager.LayoutParams.SYSTEM_FLAG_SHOW_FOR_ALL_USERS;
         window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
         window.requestFeature(Window.FEATURE_NO_TITLE);
-        // The rounded card supplies its own surface; keep the window transparent.
-        window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        window.setGravity(Gravity.CENTER);
 
         setContentView(R.layout.quick_settings_onthego_dialog);
         setCanceledOnTouchOutside(true);
 
-        applyDialogWidth(window);
-
         final ContentResolver resolver = mContext.getContentResolver();
 
-        mAlphaValue = (TextView) findViewById(R.id.alpha_value);
-
-        final SeekBar slider = (SeekBar) findViewById(R.id.alpha_slider);
-        final float alpha = Settings.System.getFloat(resolver,
-                Settings.System.ON_THE_GO_ALPHA, 0.5f);
-        final int progress = alphaToProgress(alpha);
-        slider.setProgress(progress);
-        updateAlphaLabel(progress);
-        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+        final SeekBar mSlider = (SeekBar) findViewById(R.id.alpha_slider);
+        final float value = Settings.System.getFloat(resolver,
+                Settings.System.ON_THE_GO_ALPHA,
+                0.5f);
+        final int progress = ((int) (value * 100));
+        mSlider.setProgress(progress);
+        mSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                updateAlphaLabel(progress);
-                // Ignore the programmatic setProgress() above; only react to drags.
-                if (!fromUser) {
-                    return;
-                }
-                sendAlphaBroadcast(progressToAlpha(progress));
+            public void onProgressChanged(SeekBar seekBar, int i, boolean b) {
+                sendAlphaBroadcast(String.valueOf(i + 10));
             }
 
             @Override
@@ -172,29 +146,6 @@ public class OnTheGoDialog extends Dialog {
         removeAllOnTheGoDialogCallbacks();
     }
 
-    private void applyDialogWidth(Window window) {
-        final DisplayMetrics dm = mContext.getResources().getDisplayMetrics();
-        final int maxWidth = (int) (DIALOG_MAX_WIDTH_DP * dm.density);
-        final int margin = (int) (DIALOG_SIDE_MARGIN_DP * dm.density);
-        final int width = Math.min(dm.widthPixels - (2 * margin), maxWidth);
-        window.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT);
-    }
-
-    private static float progressToAlpha(int progress) {
-        return MIN_ALPHA + (progress / 100f) * (1f - MIN_ALPHA);
-    }
-
-    private static int alphaToProgress(float alpha) {
-        final float clamped = Math.max(MIN_ALPHA, Math.min(1f, alpha));
-        return Math.round((clamped - MIN_ALPHA) / (1f - MIN_ALPHA) * 100f);
-    }
-
-    private void updateAlphaLabel(int progress) {
-        if (mAlphaValue != null) {
-            mAlphaValue.setText(Math.round(progressToAlpha(progress) * 100f) + "%");
-        }
-    }
-
     private void dismissOnTheGoDialog(int timeout) {
         removeAllOnTheGoDialogCallbacks();
         mHandler.postDelayed(mDismissDialogRunnable, timeout);
@@ -204,16 +155,17 @@ public class OnTheGoDialog extends Dialog {
         mHandler.removeCallbacks(mDismissDialogRunnable);
     }
 
-    private void sendAlphaBroadcast(float alpha) {
-        final Intent alphaBroadcast = new Intent(OnTheGoService.ACTION_TOGGLE_ALPHA);
-        alphaBroadcast.setPackage(mContext.getPackageName());
-        alphaBroadcast.putExtra(OnTheGoService.EXTRA_ALPHA, alpha);
+    private void sendAlphaBroadcast(String i) {
+        final float value = (Float.parseFloat(i) / 100);
+        final Intent alphaBroadcast = new Intent();
+        alphaBroadcast.setAction(OnTheGoService.ACTION_TOGGLE_ALPHA);
+        alphaBroadcast.putExtra(OnTheGoService.EXTRA_ALPHA, value);
         mContext.sendBroadcast(alphaBroadcast);
     }
 
     private void sendCameraBroadcast() {
-        final Intent cameraBroadcast = new Intent(OnTheGoService.ACTION_TOGGLE_CAMERA);
-        cameraBroadcast.setPackage(mContext.getPackageName());
+        final Intent cameraBroadcast = new Intent();
+        cameraBroadcast.setAction(OnTheGoService.ACTION_TOGGLE_CAMERA);
         mContext.sendBroadcast(cameraBroadcast);
     }
 
